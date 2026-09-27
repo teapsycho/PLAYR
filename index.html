@@ -1,0 +1,479 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>PLAYR · тест фона</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+:root{
+  --bg:var(--tg-theme-bg-color,#ffffff);
+  --text:var(--tg-theme-text-color,#141414);
+  --hint:var(--tg-theme-hint-color,#8a8a8e);
+  --accent:var(--tg-theme-button-color,#2f7cf6);
+  --accent-text:var(--tg-theme-button-text-color,#ffffff);
+  --sec:var(--tg-theme-secondary-bg-color,#f1f1f4);
+  --ok:#2fb35a; --bad:#e5484d; --warn:#e89b1a;
+  --hue:220;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Roboto","Segoe UI",sans-serif}
+body{padding:calc(env(safe-area-inset-top,0px) + 16px) 16px calc(env(safe-area-inset-bottom,0px) + 32px)}
+main{max-width:520px;margin:0 auto}
+h2{font-size:17px;margin:28px 0 10px;font-weight:650}
+p.hint,.hint{color:var(--hint);font-size:13px;margin:0}
+button,.btn{font:inherit;border:0;cursor:pointer;color:var(--text);background:var(--sec);
+  border-radius:12px;padding:10px 14px;display:inline-flex;align-items:center;gap:6px}
+button:focus-visible,.btn:focus-within,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.primary{background:var(--accent);color:var(--accent-text)}
+
+/* now playing */
+.stage{display:flex;flex-direction:column;align-items:center;padding-top:8px}
+.cover{width:min(68vw,260px);aspect-ratio:1;border-radius:22px;overflow:hidden;
+  box-shadow:0 18px 50px -12px hsla(var(--hue),70%,45%,.55);transition:box-shadow .6s ease,transform .35s ease}
+.cover.paused{transform:scale(.94)}
+.cover img{width:100%;height:100%;display:block}
+.meta{text-align:center;margin:18px 0 6px;min-height:46px}
+.meta b{display:block;font-size:20px;font-weight:700}
+.meta span{color:var(--hint)}
+.seekrow{width:100%;display:flex;align-items:center;gap:10px;font-size:12px;color:var(--hint);font-variant-numeric:tabular-nums}
+input[type=range]{flex:1;accent-color:var(--accent)}
+.controls{display:flex;gap:18px;align-items:center;margin:10px 0 4px}
+.controls button{background:none;padding:8px}
+.controls svg{width:30px;height:30px;fill:var(--text)}
+.controls .play{background:var(--accent);border-radius:50%;width:64px;height:64px;justify-content:center}
+.controls .play svg{fill:var(--accent-text);width:28px;height:28px}
+
+/* lists */
+.list{background:var(--sec);border-radius:14px;overflow:hidden}
+.row{display:flex;align-items:center;gap:12px;padding:10px 12px;border-bottom:1px solid color-mix(in srgb,var(--hint) 18%,transparent)}
+.row:last-child{border-bottom:0}
+.row .dot{width:34px;height:34px;border-radius:8px;flex:none}
+.row .t{flex:1;min-width:0}
+.row .t b{display:block;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .t small{color:var(--hint)}
+.row.on b{color:var(--accent)}
+.row button.state{min-width:48px;justify-content:center;padding:6px 10px}
+.add{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
+.add input[type=url]{flex:1;min-width:160px;border:0;border-radius:12px;padding:10px 12px;background:var(--sec);color:var(--text);font:inherit}
+
+.verdict{font-weight:650}
+.v-ok{color:var(--ok)} .v-bad{color:var(--bad)} .v-warn{color:var(--warn)}
+.env{font-size:12px;color:var(--hint);word-break:break-word;margin-top:6px}
+pre#log{background:var(--sec);border-radius:14px;padding:12px;font-size:11.5px;line-height:1.45;
+  max-height:280px;overflow:auto;white-space:pre-wrap;margin:0}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:10px}
+textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-radius:12px;border:0;padding:10px;
+  background:var(--sec);color:var(--text);font:12px/1.4 ui-monospace,Menlo,monospace}
+@media (prefers-reduced-motion:reduce){.cover{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <section class="stage">
+    <div class="cover paused" id="cover"><img id="coverImg" alt=""></div>
+    <div class="meta"><b id="title">—</b><span id="artist">Нажмите ▶ чтобы начать</span></div>
+    <div class="seekrow"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Позиция"><span id="dur">0:00</span></div>
+    <div class="controls">
+      <button id="prev" aria-label="Предыдущий"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+      <button id="play" class="play" aria-label="Играть"><svg viewBox="0 0 24 24" id="playIcon"><path d="M7 4v16l13-8z"/></svg></button>
+      <button id="next" aria-label="Следующий"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+    </div>
+  </section>
+
+  <h2>Очередь</h2>
+  <div class="list" id="queue"></div>
+  <div class="add">
+    <label class="btn">Добавить файлы<input type="file" id="files" accept="audio/*" multiple hidden></label>
+    <input type="url" id="url" placeholder="https://…/track.mp3" aria-label="Ссылка на трек">
+    <button id="addUrl">Добавить</button>
+  </div>
+  <p class="hint" style="margin-top:8px">Тесты A–C короткие (20 с), чтобы быстро проверить автопереход в фоне. Длинный трек — для проверки стриминга по сети.</p>
+
+  <h2>Замеры в фоне</h2>
+  <p class="hint">Включите трек и уйдите из Mini App хотя бы на 30 секунд. При возврате здесь появится результат.</p>
+  <div class="list" id="results" style="margin-top:10px"></div>
+
+  <h2>Чек-лист</h2>
+  <p class="hint">Нажимайте на статус: — → ✅ → ❌</p>
+  <div class="list" id="checklist" style="margin-top:10px"></div>
+
+  <h2>Устройство</h2>
+  <div class="env" id="env"></div>
+
+  <h2>Лог событий</h2>
+  <pre id="log"></pre>
+  <div class="actions">
+    <button class="primary" id="copy">Скопировать отчёт</button>
+    <button id="reset">Сбросить результаты</button>
+  </div>
+  <textarea id="reportBox" readonly></textarea>
+</main>
+
+<audio id="audio" preload="auto" playsinline></audio>
+
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
+  const audio = $('#audio');
+  const STORE = 'playr-bgtest-v1';
+
+  /* ---------- state ---------- */
+  const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } })();
+  const results = saved.results || [];
+  const logLines = saved.log || [];
+  const checks = [
+    ['minimize', 'Свернуть Mini App (стрелка/свайп вниз) — музыка играет'],
+    ['otherChat', 'Перейти в другой чат — музыка играет'],
+    ['homeScreen', 'Выйти из Telegram на рабочий стол — музыка играет'],
+    ['lock', 'Заблокировать экран — музыка играет'],
+    ['lockControls', 'Кнопки на экране блокировки / в шторке работают'],
+    ['lockArtwork', 'Название и обложка видны на экране блокировки'],
+    ['autoNext', 'Автопереход на следующий трек в фоне'],
+    ['headset', 'Кнопки наушников (пауза / следующий)'],
+    ['interrupt', 'После звонка / голосового воспроизведение восстанавливается'],
+    ['closeApp', 'Полностью закрыть Mini App — музыка останавливается (ожидаемо)']
+  ];
+  const checkState = saved.checks || {};
+  let tracks = [];
+  let idx = 0;
+  let away = null;
+  let userPause = false;
+  let switching = false;
+  let seeking = false;
+
+  const persist = () => {
+    try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300) })); } catch {}
+  };
+
+  /* ---------- helpers ---------- */
+  const fmt = s => { if (!isFinite(s) || s < 0) s = 0; const m = Math.floor(s / 60), r = Math.floor(s % 60); return m + ':' + String(r).padStart(2, '0'); };
+  const ts = () => { const d = new Date(); return d.toTimeString().slice(0, 8) + '.' + String(d.getMilliseconds()).padStart(3, '0'); };
+  function log(msg) {
+    logLines.push(ts() + (away ? ' [фон] ' : ' ') + msg);
+    if (logLines.length > 600) logLines.splice(0, logLines.length - 600);
+    $('#log').textContent = logLines.slice(-200).reverse().join('\n');
+    persist();
+  }
+
+  /* ---------- generated test audio (WAV, no network) ---------- */
+  function makeWav(sec, base) {
+    const sr = 22050, n = sr * sec, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+    const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+    w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+    v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+    v.setUint32(24, sr, true); v.setUint32(28, sr * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+    w(36, 'data'); v.setUint32(40, n * 2, true);
+    const seq = [0, 4, 7, 12, 7, 4, 2, 5, 9, 12, 9, 5], noteLen = Math.floor(0.25 * sr);
+    for (let i = 0; i < n; i++) {
+      const k = Math.floor(i / noteLen), p = (i % noteLen) / noteLen, t = i / sr;
+      const f = base * Math.pow(2, seq[k % seq.length] / 12);
+      const env = Math.min(1, p * 20) * Math.pow(1 - p, 1.5);
+      let s = (Math.sin(2 * Math.PI * f * t) * 0.6 + Math.sin(4 * Math.PI * f * t) * 0.15) * env * 0.35;
+      s *= Math.min(1, t / 0.05, (sec - t) / 0.05);
+      v.setInt16(44 + i * 2, Math.max(-1, Math.min(1, s)) * 32767, true);
+    }
+    return URL.createObjectURL(new Blob([buf], { type: 'audio/wav' }));
+  }
+
+  /* ---------- covers ---------- */
+  const coverCache = {};
+  function coverFor(t) {
+    if (coverCache[t.id]) return coverCache[t.id];
+    const c = document.createElement('canvas'); c.width = c.height = 512;
+    const x = c.getContext('2d');
+    const g = x.createLinearGradient(0, 0, 512, 512);
+    g.addColorStop(0, `hsl(${t.hue},72%,58%)`); g.addColorStop(1, `hsl(${(t.hue + 55) % 360},70%,30%)`);
+    x.fillStyle = g; x.fillRect(0, 0, 512, 512);
+    x.fillStyle = 'rgba(255,255,255,.92)'; x.font = '700 250px -apple-system,Roboto,sans-serif';
+    x.textAlign = 'center'; x.textBaseline = 'middle';
+    x.fillText((t.title.replace(/^Тест\s*/, '')[0] || '♪').toUpperCase(), 256, 270);
+    return (coverCache[t.id] = c.toDataURL('image/png'));
+  }
+
+  let uid = 0;
+  const addTrack = (title, artist, src, hue) => tracks.push({ id: ++uid, title, artist, src, hue: hue ?? Math.floor(Math.random() * 360) });
+
+  /* ---------- UI render ---------- */
+  function renderQueue() {
+    $('#queue').innerHTML = '';
+    tracks.forEach((t, i) => {
+      const r = document.createElement('div');
+      r.className = 'row' + (i === idx ? ' on' : '');
+      r.innerHTML = `<div class="dot" style="background:linear-gradient(135deg,hsl(${t.hue},72%,58%),hsl(${(t.hue + 55) % 360},70%,30%))"></div><div class="t"><b></b><small></small></div>`;
+      r.querySelector('b').textContent = t.title;
+      r.querySelector('small').textContent = t.artist;
+      r.onclick = () => { load(i, true); };
+      $('#queue').appendChild(r);
+    });
+  }
+
+  function renderResults() {
+    const box = $('#results');
+    if (!results.length) { box.innerHTML = '<div class="row"><div class="t"><small>Пока нет замеров</small></div></div>'; return; }
+    box.innerHTML = '';
+    results.slice().reverse().forEach(r => {
+      const el = document.createElement('div'); el.className = 'row';
+      const cls = r.code === 'ok' ? 'v-ok' : r.code === 'bad' ? 'v-bad' : 'v-warn';
+      el.innerHTML = `<div class="t"><b class="verdict ${cls}"></b><small></small></div>`;
+      el.querySelector('b').textContent = r.verdict;
+      el.querySelector('small').textContent =
+        `${r.when} · ${r.src} · в фоне ${Math.round(r.wall)} с, проиграно ${Math.round(r.prog)} с` +
+        (r.tracks ? `, треков сменилось: ${r.tracks}` : '') + (r.pauses ? `, системных пауз: ${r.pauses}` : '');
+      box.appendChild(el);
+    });
+  }
+
+  function renderChecklist() {
+    const box = $('#checklist'); box.innerHTML = '';
+    checks.forEach(([key, label]) => {
+      const el = document.createElement('div'); el.className = 'row';
+      el.innerHTML = `<div class="t"><b style="font-weight:450;white-space:normal"></b></div><button class="state"></button>`;
+      el.querySelector('b').textContent = label;
+      const b = el.querySelector('button');
+      const show = () => { b.textContent = { ok: '✅', bad: '❌' }[checkState[key]] || '—'; };
+      show();
+      b.onclick = () => {
+        checkState[key] = checkState[key] === 'ok' ? 'bad' : checkState[key] === 'bad' ? undefined : 'ok';
+        if (!checkState[key]) delete checkState[key];
+        show(); persist();
+        tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged();
+      };
+      box.appendChild(el);
+    });
+  }
+
+  function renderNow() {
+    const t = tracks[idx]; if (!t) return;
+    $('#title').textContent = t.title;
+    $('#artist').textContent = t.artist;
+    $('#coverImg').src = coverFor(t);
+    document.documentElement.style.setProperty('--hue', t.hue);
+    renderQueue();
+  }
+
+  function renderPlayState() {
+    const playing = !audio.paused;
+    $('#playIcon').innerHTML = playing ? '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>' : '<path d="M7 4v16l13-8z"/>';
+    $('#play').setAttribute('aria-label', playing ? 'Пауза' : 'Играть');
+    $('#cover').classList.toggle('paused', !playing);
+    if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
+  }
+
+  /* ---------- Media Session ---------- */
+  function updateMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    const t = tracks[idx];
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: t.title, artist: t.artist, album: 'PLAYR · тест',
+        artwork: [{ src: coverFor(t), sizes: '512x512', type: 'image/png' }]
+      });
+    } catch (e) { log('MediaMetadata ошибка: ' + e.message); }
+  }
+  function updatePosition() {
+    if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+    if (!isFinite(audio.duration) || audio.duration <= 0) return;
+    try {
+      navigator.mediaSession.setPositionState({
+        duration: audio.duration, playbackRate: audio.playbackRate || 1,
+        position: Math.min(audio.currentTime, audio.duration)
+      });
+    } catch {}
+  }
+  function setupMediaSession() {
+    if (!('mediaSession' in navigator)) { log('Media Session API не поддерживается'); return; }
+    const h = {
+      play: () => { log('MS: play'); play(); },
+      pause: () => { log('MS: pause'); userPause = true; audio.pause(); },
+      stop: () => { log('MS: stop'); userPause = true; audio.pause(); },
+      previoustrack: () => { log('MS: previoustrack'); prev(); },
+      nexttrack: () => { log('MS: nexttrack'); next(true); },
+      seekbackward: d => { log('MS: seekbackward'); audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); },
+      seekforward: d => { log('MS: seekforward'); audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + (d.seekOffset || 10)); },
+      seekto: d => { log('MS: seekto ' + fmt(d.seekTime)); audio.currentTime = d.seekTime; updatePosition(); }
+    };
+    Object.entries(h).forEach(([a, fn]) => {
+      try { navigator.mediaSession.setActionHandler(a, fn); } catch { log('MS: действие не поддерживается — ' + a); }
+    });
+  }
+
+  /* ---------- playback ---------- */
+  function load(i, autoplay) {
+    idx = (i + tracks.length) % tracks.length;
+    switching = true;
+    audio.src = tracks[idx].src;
+    audio.load();
+    switching = false;
+    renderNow(); updateMediaSession();
+    log(`загрузка: ${tracks[idx].title}`);
+    if (autoplay) play();
+  }
+  function play() {
+    if (!audio.src) { load(idx, false); }
+    const p = audio.play();
+    if (p && p.catch) p.catch(e => log(`play() отклонён: ${e.name} — ${e.message}`));
+  }
+  function next(autoplay) { load(idx + 1, autoplay ?? !audio.paused); }
+  function prev() {
+    if (audio.currentTime > 3) { audio.currentTime = 0; return; }
+    load(idx - 1, !audio.paused || true);
+  }
+
+  $('#play').onclick = () => {
+    if (audio.paused) play(); else { userPause = true; audio.pause(); }
+    tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred('light');
+  };
+  $('#next').onclick = () => next(true);
+  $('#prev').onclick = prev;
+
+  const seek = $('#seek');
+  seek.addEventListener('input', () => { seeking = true; $('#cur').textContent = fmt(seek.value / 1000 * (audio.duration || 0)); });
+  seek.addEventListener('change', () => { if (isFinite(audio.duration)) audio.currentTime = seek.value / 1000 * audio.duration; seeking = false; updatePosition(); });
+
+  audio.addEventListener('timeupdate', () => {
+    $('#cur').textContent = fmt(audio.currentTime);
+    if (!seeking && audio.duration) seek.value = Math.round(audio.currentTime / audio.duration * 1000);
+  });
+  audio.addEventListener('loadedmetadata', () => { $('#dur').textContent = fmt(audio.duration); updatePosition(); });
+  audio.addEventListener('play', () => { log('▶ play'); renderPlayState(); updatePosition(); });
+  audio.addEventListener('pause', () => {
+    if (audio.ended || switching) return;
+    const bySystem = !userPause;
+    log('⏸ pause' + (bySystem ? ' (не пользователем)' : ''));
+    if (away && bySystem) away.pauses++;
+    userPause = false;
+    renderPlayState(); updatePosition();
+  });
+  audio.addEventListener('ended', () => {
+    log('⏹ ended → следующий');
+    if (away) away.ended.push({ dur: audio.duration || 0 });
+    next(true);
+  });
+  ['waiting', 'stalled', 'suspend', 'error'].forEach(ev => audio.addEventListener(ev, () => {
+    if (ev === 'suspend' && audio.readyState >= 3) return;
+    log(`audio: ${ev}` + (ev === 'error' && audio.error ? ` (код ${audio.error.code})` : ''));
+  }));
+
+  /* ---------- background measurement ---------- */
+  function goAway(src) {
+    log('уход: ' + src);
+    if (away) return;
+    away = { t: Date.now(), src, wasPlaying: !audio.paused, idx, ct: audio.currentTime, ended: [], pauses: 0 };
+  }
+  function comeBack(src) {
+    if (!away) { log('возврат: ' + src); return; }
+    const a = away; away = null;
+    log('возврат: ' + src);
+    const wall = (Date.now() - a.t) / 1000;
+    if (wall < 3) return;
+    if (!a.wasPlaying) { log(`замер пропущен: при уходе (${a.src}) музыка не играла`); return; }
+    let prog;
+    if (!a.ended.length) prog = idx === a.idx ? audio.currentTime - a.ct : audio.currentTime;
+    else prog = Math.max(0, a.ended[0].dur - a.ct) + a.ended.slice(1).reduce((s, e) => s + e.dur, 0) + audio.currentTime;
+    prog = Math.max(0, prog);
+    const ratio = prog / wall;
+    let code, verdict;
+    if (ratio >= 0.85) { code = 'ok'; verdict = '✅ Играло в фоне'; }
+    else if (ratio >= 0.1) { code = 'warn'; verdict = `⚠️ Остановилось примерно через ${Math.round(prog)} с`; }
+    else { code = 'bad'; verdict = '❌ В фоне не играло'; }
+    results.push({ when: new Date().toTimeString().slice(0, 5), src: a.src, wall, prog, tracks: a.ended.length, pauses: a.pauses, code, verdict });
+    log(`замер: ${verdict} (${Math.round(prog)}/${Math.round(wall)} с)`);
+    persist(); renderResults();
+    tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(code === 'ok' ? 'success' : code === 'bad' ? 'error' : 'warning');
+  }
+
+  document.addEventListener('visibilitychange', () => document.hidden ? goAway('visibility:hidden') : comeBack('visibility:visible'));
+  window.addEventListener('pagehide', () => { log('pagehide'); persist(); });
+  window.addEventListener('pageshow', e => log('pageshow' + (e.persisted ? ' (из кэша)' : '')));
+  document.addEventListener('freeze', () => log('freeze — страница заморожена'));
+  document.addEventListener('resume', () => log('resume'));
+  window.addEventListener('blur', () => log('window blur'));
+  window.addEventListener('focus', () => log('window focus'));
+
+  setInterval(() => {
+    if (away) log(`тик JS: ${audio.paused ? 'пауза' : 'играет'} ${fmt(audio.currentTime)} / ${tracks[idx] ? tracks[idx].title : ''}`);
+  }, 5000);
+
+  /* ---------- Telegram integration ---------- */
+  if (tg) {
+    tg.ready();
+    tg.expand();
+    try { tg.disableVerticalSwipes && tg.disableVerticalSwipes(); } catch {}
+    try { tg.enableClosingConfirmation && tg.enableClosingConfirmation(); } catch {}
+    try { tg.setHeaderColor && tg.setHeaderColor('bg_color'); } catch {}
+    const ev = (name, cb) => { try { tg.onEvent(name, cb); } catch {} };
+    ev('activated', () => comeBack('tg:activated'));
+    ev('deactivated', () => goAway('tg:deactivated'));
+    ev('viewportChanged', e => { if (e && e.isStateStable) log(`tg:viewportChanged h=${Math.round(tg.viewportHeight)} expanded=${tg.isExpanded}`); });
+    ev('fullscreenChanged', () => log('tg:fullscreenChanged ' + tg.isFullscreen));
+    ev('themeChanged', () => log('tg:themeChanged'));
+  }
+
+  /* ---------- environment ---------- */
+  const env = [
+    tg ? `Telegram: ${tg.platform}, Bot API ${tg.version}` : 'Открыто вне Telegram',
+    'Media Session: ' + ('mediaSession' in navigator ? 'есть' : 'нет'),
+    'setPositionState: ' + ('mediaSession' in navigator && navigator.mediaSession.setPositionState ? 'есть' : 'нет'),
+    'UA: ' + navigator.userAgent
+  ];
+  $('#env').textContent = env.join('\n');
+  $('#env').style.whiteSpace = 'pre-wrap';
+
+  /* ---------- adding tracks ---------- */
+  $('#files').addEventListener('change', e => {
+    const fs = [...e.target.files];
+    fs.forEach(f => addTrack(f.name.replace(/\.[^.]+$/, ''), 'Файл с устройства', URL.createObjectURL(f)));
+    log(`добавлено файлов: ${fs.length}`);
+    renderQueue(); e.target.value = '';
+  });
+  $('#addUrl').onclick = () => {
+    const u = $('#url').value.trim();
+    if (!/^https:\/\//.test(u)) { log('нужна ссылка, начинающаяся с https://'); return; }
+    addTrack(decodeURIComponent(u.split('/').pop().split('?')[0]) || 'Трек по ссылке', 'Стриминг по сети', u);
+    $('#url').value = ''; log('добавлена ссылка: ' + u); renderQueue();
+  };
+
+  /* ---------- report ---------- */
+  function buildReport() {
+    const lines = ['PLAYR — тест фонового воспроизведения', new Date().toLocaleString('ru-RU'), '', ...env, '', 'Замеры:'];
+    if (!results.length) lines.push('  нет');
+    results.forEach(r => lines.push(`  ${r.verdict} | ${r.src} | ${Math.round(r.prog)}/${Math.round(r.wall)} с | треков: ${r.tracks} | сист. пауз: ${r.pauses}`));
+    lines.push('', 'Чек-лист:');
+    checks.forEach(([k, l]) => lines.push(`  ${{ ok: '✅', bad: '❌' }[checkState[k]] || '—'} ${l}`));
+    lines.push('', 'Лог (последние 80):', ...logLines.slice(-80));
+    return lines.join('\n');
+  }
+  $('#copy').onclick = async () => {
+    const text = buildReport();
+    try { await navigator.clipboard.writeText(text); $('#copy').textContent = 'Скопировано'; }
+    catch {
+      const box = $('#reportBox'); box.style.display = 'block'; box.value = text; box.focus(); box.select();
+      let ok = false; try { ok = document.execCommand('copy'); } catch {}
+      $('#copy').textContent = ok ? 'Скопировано' : 'Выделите текст ниже и скопируйте';
+    }
+    setTimeout(() => { $('#copy').textContent = 'Скопировать отчёт'; }, 2500);
+  };
+  $('#reset').onclick = () => {
+    results.length = 0; logLines.length = 0;
+    Object.keys(checkState).forEach(k => delete checkState[k]);
+    persist(); renderResults(); renderChecklist(); $('#log').textContent = '';
+  };
+
+  /* ---------- init ---------- */
+  addTrack('Тест A', 'Сгенерировано · 20 с', makeWav(20, 330), 215);
+  addTrack('Тест B', 'Сгенерировано · 20 с', makeWav(20, 392), 280);
+  addTrack('Тест C', 'Сгенерировано · 20 с', makeWav(20, 262), 25);
+  addTrack('Длинный трек', 'SoundHelix · стриминг, ~6 мин', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3', 160);
+
+  setupMediaSession();
+  load(0, false);
+  renderPlayState(); renderResults(); renderChecklist();
+  $('#log').textContent = logLines.slice(-200).reverse().join('\n');
+  log('старт' + (tg ? ` (${tg.platform})` : ''));
+})();
+</script>
+</body>
+</html>
