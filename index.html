@@ -54,6 +54,8 @@ input[type=range]{flex:1;accent-color:var(--accent)}
 .row .t b{display:block;font-weight:550;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .t small{color:var(--hint)}
 .row.on b{color:var(--accent)}
+.row.mode{cursor:pointer}
+.row.mode .tick{width:22px;text-align:center;color:var(--accent);font-weight:700}
 .row button.state{min-width:48px;justify-content:center;padding:6px 10px}
 .add{display:flex;gap:8px;margin-top:10px;flex-wrap:wrap}
 .add input[type=url]{flex:1;min-width:160px;border:0;border-radius:12px;padding:10px 12px;background:var(--sec);color:var(--text);font:inherit}
@@ -74,7 +76,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   <section class="stage">
     <div class="cover paused" id="cover"><img id="coverImg" alt=""></div>
     <div class="meta"><b id="title">—</b><span id="artist">Нажмите ▶ чтобы начать</span></div>
-    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-2</p>
+    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-3</p>
     <div class="seekrow"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Позиция"><span id="dur">0:00</span></div>
     <div class="controls">
       <button id="prev" aria-label="Предыдущий"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
@@ -82,6 +84,10 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       <button id="next" aria-label="Следующий"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
     </div>
   </section>
+
+  <h2>Режим кнопок экрана блокировки</h2>
+  <p class="hint">Выберите режим, включите трек, заблокируйте экран и посмотрите, какие кнопки видны. Нажмите их и вернитесь сюда.</p>
+  <div class="list" id="modes" style="margin-top:10px"></div>
 
   <h2>Очередь</h2>
   <div class="list" id="queue"></div>
@@ -119,7 +125,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   const $ = s => document.querySelector(s);
   const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
   const audio = $('#audio');
-  const STORE = 'playr-bgtest-ios-v2';
+  const STORE = 'playr-bgtest-ios-v3';
 
   /* ---------- state ---------- */
   const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } })();
@@ -148,7 +154,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   let interrupted = false;
 
   const persist = () => {
-    try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300) })); } catch {}
+    try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300), mode })); } catch {}
   };
 
   /* ---------- helpers ---------- */
@@ -277,8 +283,19 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       });
     } catch (e) { log('MediaMetadata ошибка: ' + e.message); }
   }
+  const MODES = {
+    A: { name: 'Треки + ползунок', desc: '⏮ ⏭, перемотка ползунком, позиция передаётся', seekto: true,  position: true,  remap: false },
+    B: { name: 'Только треки',     desc: '⏮ ⏭, без перемотки ползунком, позиция передаётся', seekto: false, position: true,  remap: false },
+    C: { name: 'Только треки, без позиции', desc: '⏮ ⏭, система не знает длительность трека', seekto: false, position: false, remap: false },
+    D: { name: 'Подмена ±10 на треки', desc: 'Если iOS всё равно рисует ±10 — эти кнопки переключают трек', seekto: true, position: true, remap: true }
+  };
+  let mode = saved.mode && MODES[saved.mode] ? saved.mode : 'A';
+  let lastMsAction = 0;
+  const msLog = name => { lastMsAction = Date.now(); log('MS: ' + name); };
+
   function updatePosition() {
     if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
+    if (!MODES[mode].position) { try { navigator.mediaSession.setPositionState(); } catch {} return; }
     if (!isFinite(audio.duration) || audio.duration <= 0) return;
     try {
       navigator.mediaSession.setPositionState({
@@ -289,22 +306,48 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
   function setupMediaSession() {
     if (!('mediaSession' in navigator)) { log('Media Session API не поддерживается'); return; }
-    // iOS: если зарегистрированы seekbackward/seekforward, экран блокировки показывает ±10 с
-    // вместо ⏮ ⏭. Поэтому регистрируем только переключение треков и перемотку ползунком.
+    const m = MODES[mode];
     const h = {
-      play: () => { log('MS: play'); play(); },
-      pause: () => { log('MS: pause'); userPause = true; audio.pause(); },
-      stop: () => { log('MS: stop'); userPause = true; audio.pause(); },
-      previoustrack: () => { log('MS: previoustrack'); prev(); },
-      nexttrack: () => { log('MS: nexttrack'); next(true); },
-      seekto: d => { log('MS: seekto ' + fmt(d.seekTime)); audio.currentTime = d.seekTime; updatePosition(); },
-      seekbackward: null,
-      seekforward: null
+      play: () => { msLog('play'); play(); },
+      pause: () => { msLog('pause'); userPause = true; audio.pause(); },
+      stop: () => { msLog('stop'); userPause = true; audio.pause(); },
+      previoustrack: () => { msLog('previoustrack'); prev(); },
+      nexttrack: () => { msLog('nexttrack'); next(true); },
+      seekto: m.seekto ? d => { msLog('seekto ' + fmt(d.seekTime)); audio.currentTime = d.seekTime; updatePosition(); } : null,
+      seekbackward: m.remap ? () => { msLog('seekbackward → предыдущий трек'); prev(); } : null,
+      seekforward: m.remap ? () => { msLog('seekforward → следующий трек'); next(true); } : null
     };
     Object.entries(h).forEach(([a, fn]) => {
       try { navigator.mediaSession.setActionHandler(a, fn); } catch { if (fn) log('MS: действие не поддерживается — ' + a); }
     });
+    updatePosition();
   }
+  function renderModes() {
+    const box = $('#modes'); box.innerHTML = '';
+    Object.entries(MODES).forEach(([k, m]) => {
+      const el = document.createElement('div'); el.className = 'row mode' + (k === mode ? ' on' : '');
+      el.innerHTML = `<div class="tick">${k === mode ? '✓' : ''}</div><div class="t"><b></b><small></small></div>`;
+      el.querySelector('b').textContent = `${k}. ${m.name}`;
+      el.querySelector('small').textContent = m.desc;
+      el.onclick = () => {
+        mode = k; persist(); renderModes(); setupMediaSession(); updateMediaSession();
+        log(`режим: ${k} — ${m.name}`);
+        tg && tg.HapticFeedback && tg.HapticFeedback.selectionChanged();
+      };
+      box.appendChild(el);
+    });
+  }
+
+  /* детектор: позиция прыгнула, а наш обработчик не вызывался — значит, кнопку обработала система */
+  let lastCt = 0, lastWall = Date.now();
+  audio.addEventListener('timeupdate', () => {
+    const now = Date.now(), dCt = audio.currentTime - lastCt, dWall = (now - lastWall) / 1000;
+    if (!audio.paused && !switching && Math.abs(dCt - dWall) > 5 && now - lastMsAction > 1500 && !seeking && lastCt > 0) {
+      log(`скачок позиции ${dCt > 0 ? '+' : ''}${Math.round(dCt - dWall)} с — кнопку обработала система, не PLAYR`);
+    }
+    lastCt = audio.currentTime; lastWall = now;
+  });
+  audio.addEventListener('emptied', () => { lastCt = 0; lastWall = Date.now(); });
 
   /* ---------- playback ---------- */
   function load(i, autoplay) {
@@ -345,7 +388,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
 
   const seek = $('#seek');
   seek.addEventListener('input', () => { seeking = true; $('#cur').textContent = fmt(seek.value / 1000 * (audio.duration || 0)); });
-  seek.addEventListener('change', () => { if (isFinite(audio.duration)) audio.currentTime = seek.value / 1000 * audio.duration; seeking = false; updatePosition(); });
+  seek.addEventListener('change', () => { lastMsAction = Date.now(); if (isFinite(audio.duration)) audio.currentTime = seek.value / 1000 * audio.duration; seeking = false; updatePosition(); });
 
   audio.addEventListener('timeupdate', () => {
     $('#cur').textContent = fmt(audio.currentTime);
@@ -355,6 +398,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   audio.addEventListener('play', () => {
     log('▶ play');
     interrupted = false;
+    setupMediaSession();
     if (away && away.userPauseStart) { away.userPausedMs += Date.now() - away.userPauseStart; away.userPauseStart = 0; }
     renderPlayState(); updatePosition();
   });
@@ -441,7 +485,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
 
   /* ---------- environment ---------- */
-  const BUILD = 'ios-2';
+  const BUILD = 'ios-3';
   const env = [
     'Сборка: ' + BUILD,
     tg ? `Telegram: ${tg.platform}, Bot API ${tg.version}` : 'Открыто вне Telegram',
@@ -471,6 +515,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     const lines = ['PLAYR — iOS тест фонового воспроизведения', new Date().toLocaleString('ru-RU'), '', ...env, '', 'Замеры:'];
     if (!results.length) lines.push('  нет');
     results.forEach(r => lines.push(`  ${r.verdict} | ${r.src} | ${Math.round(r.prog)}/${Math.round(r.wall)} с | авто: ${r.tracks || 0} | ручн: ${r.switches || 0} | сист. пауз: ${r.pauses}`));
+    lines.push('', 'Режим кнопок: ' + mode + ' — ' + MODES[mode].name);
     lines.push('', 'Чек-лист:');
     checks.forEach(([k, l]) => lines.push(`  ${{ ok: '✅', bad: '❌' }[checkState[k]] || '—'} ${l}`));
     lines.push('', 'Лог (последние 80):', ...logLines.slice(-80));
@@ -499,10 +544,11 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   addTrack('Длинный трек', 'SoundHelix · стриминг, ~6 мин', 'https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3', 160);
 
   setupMediaSession();
+  renderModes();
   load(0, false);
   renderPlayState(); renderResults(); renderChecklist();
   $('#log').textContent = logLines.slice(-200).reverse().join('\n');
-  log('старт' + (tg ? ` (${tg.platform})` : ''));
+  log('старт' + (tg ? ` (${tg.platform})` : '') + `, режим ${mode}`);
 })();
 </script>
 </body>
