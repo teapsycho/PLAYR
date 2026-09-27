@@ -76,7 +76,8 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   <section class="stage">
     <div class="cover paused" id="cover"><img id="coverImg" alt=""></div>
     <div class="meta"><b id="title">—</b><span id="artist">Нажмите ▶ чтобы начать</span></div>
-    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-5</p>
+    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-6</p>
+    <p class="hint" id="stallHint" style="margin-bottom:8px;color:var(--warn);display:none">Воспроизведение прервалось — нажмите ▶</p>
     <div class="seekrow"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Позиция"><span id="dur">0:00</span></div>
     <div class="controls">
       <button id="prev" aria-label="Предыдущий"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
@@ -90,7 +91,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   <div class="list" id="modes" style="margin-top:10px"></div>
   <div class="list" style="margin-top:10px">
     <label class="row" style="cursor:pointer">
-      <div class="t"><b>Перезапуск звука после прерывания</b><small>После голосового или звонка аудио пересоздаётся заново, чтобы вернуть звук в динамик</small></div>
+      <div class="t"><b>Будить аудиосессию через Web Audio</b><small>При нажатии ▶ после голосового/звонка дополнительно запускается пустой звук Web Audio, чтобы iOS снова включила звук</small></div>
       <input type="checkbox" id="recover" style="width:22px;height:22px;accent-color:var(--accent)">
     </label>
   </div>
@@ -131,7 +132,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   const $ = s => document.querySelector(s);
   const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
   const audio = $('#audio');
-  const STORE = 'playr-bgtest-ios-v5';
+  const STORE = 'playr-bgtest-ios-v6';
 
   /* ---------- state ---------- */
   const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } })();
@@ -147,8 +148,12 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     ['lockArtwork', 'Название и обложка видны на экране блокировки'],
     ['autoNext', 'Автопереход на следующий трек в фоне'],
     ['headset', 'Кнопки наушников (пауза / следующий)'],
-    ['interrupt', 'После голосового музыка снова звучит (сама или при возврате в PLAYR)'],
-    ['interruptSilent', 'После голосового ползунок идёт, а звука нет (отметить ✅, если так было)'],
+    ['ccMoves', 'Ползунок в шторке сам движется во время игры'],
+    ['ccScrub', 'Мелкая перемотка в шторке (2–3 с) срабатывает'],
+    ['interrupt', 'После голосового музыка продолжила сама'],
+    ['interruptPaused', 'После голосового кнопка в PLAYR и на экране блокировки показывает ▶ (а не «играет»)'],
+    ['interruptApp', 'После голосового нажатие ▶ в PLAYR вернуло звук'],
+    ['interruptLock', 'После голосового нажатие ▶ на экране блокировки вернуло звук'],
     ['closeApp', 'Полностью закрыть Mini App — музыка останавливается (ожидаемо)']
   ];
   const checkState = saved.checks || {};
@@ -161,9 +166,13 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   let interrupted = false;
   let selfPlay = false;
   let restarting = false;
+  let stalled = false;        // ▶ был включён, но позиция стояла — детектор поставил паузу, ждём нажатия ▶
+  let stallPause = false;     // пауза, которую ставит сам детектор зависания
+  let recovery = null;        // { step, src } — идёт восстановление после нажатия ▶
+  let lastInterruptAt = 0;
 
   const persist = () => {
-    try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300), mode, recover: recoverOn })); } catch {}
+    try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300), mode, unlock: unlockOn })); } catch {}
   };
 
   /* ---------- helpers ---------- */
@@ -278,6 +287,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     $('#playIcon').innerHTML = playing ? '<path d="M6 4h4v16H6zM14 4h4v16h-4z"/>' : '<path d="M7 4v16l13-8z"/>';
     $('#play').setAttribute('aria-label', playing ? 'Пауза' : 'Играть');
     $('#cover').classList.toggle('paused', !playing);
+    $('#stallHint').style.display = stalled && !playing ? 'block' : 'none';
     if ('mediaSession' in navigator) navigator.mediaSession.playbackState = playing ? 'playing' : 'paused';
   }
 
@@ -300,7 +310,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     D: { name: 'Подмена ±10 на треки', desc: 'Если iOS всё равно рисует ±10 — эти кнопки переключают трек', seekto: true, position: true, remap: true }
   };
   let mode = saved.mode && MODES[saved.mode] ? saved.mode : 'A';
-  let recoverOn = saved.recover !== false;
+  let unlockOn = saved.unlock !== false;
   let lastMsAction = 0;
   const msLog = name => { lastMsAction = Date.now(); log('MS: ' + name); };
 
@@ -321,10 +331,12 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   function seekTo(t, source, fast) {
     if (!isFinite(audio.duration)) return;
     t = Math.max(0, Math.min(t, audio.duration - 0.25));
+    const from = audio.currentTime, d = t - from;
     pendingSeek = t;
     updatePosition(t);                       // сразу сообщаем системе новую позицию, чтобы ползунок не отпрыгнул
     if (fast && typeof audio.fastSeek === 'function') audio.fastSeek(t); else audio.currentTime = t;
-    log(`${source}: перемотка → ${t.toFixed(1)} с${fast ? ' (fastSeek)' : ''}`);
+    log(`${source}: перемотка ${from.toFixed(1)} → ${t.toFixed(1)} с (Δ ${d >= 0 ? '+' : ''}${d.toFixed(1)})${fast ? ' (fastSeek)' : ''}` +
+      (Math.abs(d) < 0.7 ? ' — цель совпала с текущей позицией' : ''));
   }
   audio.addEventListener('seeked', () => {
     if (pendingSeek !== null) log(`seeked: фактически ${audio.currentTime.toFixed(1)} с (цель ${pendingSeek.toFixed(1)})`);
@@ -335,7 +347,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     if (!('mediaSession' in navigator)) { log('Media Session API не поддерживается'); return; }
     const m = MODES[mode];
     const h = {
-      play: () => { msLog('play'); play(); },
+      play: () => { msLog('play'); userPlay('экран блокировки / наушники'); },
       pause: () => { msLog('pause'); userPause = true; audio.pause(); },
       stop: () => { msLog('stop'); userPause = true; audio.pause(); },
       previoustrack: () => { msLog('previoustrack'); prev(); },
@@ -384,6 +396,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       away.switches++;
     }
     idx = (i + tracks.length) % tracks.length;
+    stalled = false; recovery = null;
     switching = true;
     audio.src = tracks[idx].src;
     audio.load();
@@ -401,6 +414,33 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       log(`play() отклонён: ${e.name} — ${e.message}`);
     });
   }
+  /* ▶ от пользователя (кнопка в PLAYR, экран блокировки, наушники). Если до этого было прерывание
+     или зависание — это единственный момент, когда у нас есть жест пользователя, и iOS может снова включить звук. */
+  function userPlay(src) {
+    if (stalled || interrupted) { recoverFromStall(src); return; }
+    play();
+  }
+  function recoverFromStall(src) {
+    log(`восстановление (${src}): шаг 1 — ${unlockOn ? 'Web Audio + ' : ''}play() на ${audio.currentTime.toFixed(1)} с`);
+    stalled = false; interrupted = false;
+    recovery = { step: 1, src };
+    lastInterruptAt = Date.now();          // короткий порог детектора, чтобы быстро понять, помогло ли
+    if (unlockOn) unlockAudio();
+    play();
+  }
+  let actx = null;
+  function unlockAudio() {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) { log('Web Audio не поддерживается'); return; }
+      if (!actx) actx = new AC();
+      const before = actx.state;
+      const s = actx.createBufferSource();
+      s.buffer = actx.createBuffer(1, 1, 22050);
+      s.connect(actx.destination); s.start(0);
+      actx.resume().then(() => log(`Web Audio: ${before} → ${actx.state}`), e => log(`Web Audio resume отклонён: ${e.name}`));
+    } catch (e) { log('Web Audio ошибка: ' + e.message); }
+  }
   function next(autoplay) { load(idx + 1, autoplay ?? !audio.paused); }
   function prev() {
     if (audio.currentTime > 3) { audio.currentTime = 0; return; }
@@ -408,7 +448,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
 
   $('#play').onclick = () => {
-    if (audio.paused) play(); else { userPause = true; audio.pause(); }
+    if (audio.paused) userPlay('кнопка в PLAYR'); else { userPause = true; audio.pause(); }
     tg && tg.HapticFeedback && tg.HapticFeedback.impactOccurred('light');
   };
   $('#next').onclick = () => next(true);
@@ -428,17 +468,27 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     log('▶ play' + (byOS ? ' (возобновила система после прерывания)' : ''));
     selfPlay = false;
     interrupted = false;
-    if (byOS && recoverOn) { hardRestart('система возобновила после прерывания'); return; }
+    stalled = false;
+    if (byOS) lastInterruptAt = Date.now();   // после такого play элемент часто зависает в waiting — следим строже
+    markProgress();
+    lastCt = audio.currentTime; lastWall = Date.now();   // иначе после зависания детектор скачков видит ложный «скачок»
     setupMediaSession();
     if (away && away.userPauseStart) { away.userPausedMs += Date.now() - away.userPauseStart; away.userPauseStart = 0; }
     renderPlayState(); updatePosition();
   });
   audio.addEventListener('pause', () => {
-    if (audio.ended || switching) return;
+    if (audio.ended || switching || restarting) return;
+    if (stallPause) {
+      stallPause = false;
+      log('⏸ пауза: воспроизведение зависло — ждём ▶ от пользователя');
+      renderPlayState(); updatePosition();
+      return;
+    }
     const bySystem = !userPause;
     userPause = false;
     log('⏸ pause' + (bySystem ? ' (системная — звонок, голосовое, другое аудио)' : ''));
-    if (bySystem) interrupted = true;
+    if (bySystem) { interrupted = true; lastInterruptAt = Date.now(); }
+    else { stalled = false; recovery = null; }
     if (away) { if (bySystem) away.pauses++; else away.userPauseStart = Date.now(); }
     renderPlayState(); updatePosition();
   });
@@ -464,10 +514,9 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   function resumeAfterInterruption(src) {
     if (!interrupted || !audio.src) return;
     log('автовозобновление после прерывания (' + src + ')');
-    if (recoverOn) hardRestart(src); else play();
+    play();                                  // без жеста — если зависнет, детектор переведёт в паузу
   }
-  /* Пересоздаём аудио на той же позиции: после чужого аудио (голосовое в Telegram) iOS может оставить
-     сессию в режиме разговорного динамика или «немого» воспроизведения — время идёт, звука нет. */
+  /* Пересоздаём аудио на той же позиции — шаг 2 восстановления, если play() не сдвинул позицию. */
   function hardRestart(reason) {
     const t = audio.currentTime, src = tracks[idx].src;
     log(`перезапуск аудио (${reason}) на ${t.toFixed(1)} с`);
@@ -476,7 +525,9 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     audio.removeAttribute('src'); audio.load();
     audio.src = src; audio.load();
     switching = false;
+    let fired = false;
     const done = () => {
+      fired = true;
       audio.removeEventListener('loadedmetadata', done);
       try { audio.currentTime = t; } catch {}
       play();
@@ -484,7 +535,46 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       updateMediaSession();
     };
     audio.addEventListener('loadedmetadata', done);
+    setTimeout(() => {
+      if (fired) return;
+      audio.removeEventListener('loadedmetadata', done);
+      restarting = false;
+      giveUp('метаданные после перезагрузки не пришли за 4 с');
+    }, 4000);
   }
+
+  /* ---------- детектор зависания ----------
+     После голосового iOS сама шлёт play, элемент встаёт в waiting: paused=false, время стоит, звука нет.
+     Если позиция не растёт — честно показываем паузу (в PLAYR и на экране блокировки) и ждём ▶ от пользователя. */
+  let progCt = 0, progWall = Date.now();
+  function markProgress() { progCt = audio.currentTime; progWall = Date.now(); }
+  function giveUp(why) {
+    log(`восстановление не удалось: ${why} — ставим паузу, нажмите ▶ ещё раз`);
+    recovery = null;
+    stalled = true;
+    if (!audio.paused) { stallPause = true; audio.pause(); } else { renderPlayState(); updatePosition(); }
+  }
+  setInterval(() => {
+    if (audio.paused || audio.ended || !audio.src || switching || restarting || seeking || pendingSeek !== null) { markProgress(); return; }
+    if (Math.abs(audio.currentTime - progCt) > 0.05) {
+      if (recovery) { log(`восстановление: позиция пошла (шаг ${recovery.step}, ${recovery.src}) — проверьте, есть ли звук`); recovery = null; }
+      markProgress(); return;
+    }
+    const strict = recovery || Date.now() - lastInterruptAt < 60000;
+    const stuckMs = Date.now() - progWall;
+    if (stuckMs < (strict ? 2500 : 10000)) return;
+    log(`зависание: ▶ включён, позиция стоит ${(stuckMs / 1000).toFixed(1)} с на ${audio.currentTime.toFixed(1)} с (readyState ${audio.readyState}, networkState ${audio.networkState})`);
+    if (recovery && recovery.step === 1) {
+      recovery.step = 2;
+      hardRestart('шаг 2 — play() не помог');
+      markProgress();
+      return;
+    }
+    if (recovery) { giveUp('перезагрузка тоже не помогла'); return; }
+    stalled = true; stallPause = true;
+    audio.pause();
+    tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('warning');
+  }, 500);
   function comeBack(src) {
     log('возврат: ' + src);
     resumeAfterInterruption(src);
@@ -535,7 +625,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
 
   /* ---------- environment ---------- */
-  const BUILD = 'ios-5';
+  const BUILD = 'ios-6';
   const env = [
     'Сборка: ' + BUILD,
     tg ? `Telegram: ${tg.platform}, Bot API ${tg.version}` : 'Открыто вне Telegram',
@@ -565,7 +655,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     const lines = ['PLAYR — iOS тест фонового воспроизведения', new Date().toLocaleString('ru-RU'), '', ...env, '', 'Замеры:'];
     if (!results.length) lines.push('  нет');
     results.forEach(r => lines.push(`  ${r.verdict} | ${r.src} | ${Math.round(r.prog)}/${Math.round(r.wall)} с | авто: ${r.tracks || 0} | ручн: ${r.switches || 0} | сист. пауз: ${r.pauses}`));
-    lines.push('', 'Режим кнопок: ' + mode + ' — ' + MODES[mode].name, 'Перезапуск после прерывания: ' + (recoverOn ? 'вкл' : 'выкл'));
+    lines.push('', 'Режим кнопок: ' + mode + ' — ' + MODES[mode].name, 'Web Audio при ▶ после прерывания: ' + (unlockOn ? 'вкл' : 'выкл'));
     lines.push('', 'Чек-лист:');
     checks.forEach(([k, l]) => lines.push(`  ${{ ok: '✅', bad: '❌' }[checkState[k]] || '—'} ${l}`));
     lines.push('', 'Лог (последние 80):', ...logLines.slice(-80));
@@ -595,8 +685,8 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
 
   setupMediaSession();
   renderModes();
-  $('#recover').checked = recoverOn;
-  $('#recover').addEventListener('change', e => { recoverOn = e.target.checked; persist(); log('перезапуск после прерывания: ' + (recoverOn ? 'вкл' : 'выкл')); });
+  $('#recover').checked = unlockOn;
+  $('#recover').addEventListener('change', e => { unlockOn = e.target.checked; persist(); log('Web Audio при ▶ после прерывания: ' + (unlockOn ? 'вкл' : 'выкл')); });
   load(0, false);
   renderPlayState(); renderResults(); renderChecklist();
   $('#log').textContent = logLines.slice(-200).reverse().join('\n');
