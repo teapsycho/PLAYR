@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
-<title>PLAYR · тест фона</title>
+<title>PLAYR · iOS тест</title>
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>
 :root{
@@ -118,7 +118,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   const $ = s => document.querySelector(s);
   const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
   const audio = $('#audio');
-  const STORE = 'playr-bgtest-v1';
+  const STORE = 'playr-bgtest-ios-v2';
 
   /* ---------- state ---------- */
   const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } })();
@@ -129,11 +129,12 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     ['otherChat', 'Перейти в другой чат — музыка играет'],
     ['homeScreen', 'Выйти из Telegram на рабочий стол — музыка играет'],
     ['lock', 'Заблокировать экран — музыка играет'],
-    ['lockControls', 'Кнопки на экране блокировки / в шторке работают'],
+    ['lockControls', 'На экране блокировки и в шторке кнопки ⏮ ⏭ (а не ±10 с)'],
+    ['lockScrub', 'Перемотка ползунком на экране блокировки'],
     ['lockArtwork', 'Название и обложка видны на экране блокировки'],
     ['autoNext', 'Автопереход на следующий трек в фоне'],
     ['headset', 'Кнопки наушников (пауза / следующий)'],
-    ['interrupt', 'После звонка / голосового воспроизведение восстанавливается'],
+    ['interrupt', 'После звонка / голосового: при возврате в PLAYR музыка продолжается сама'],
     ['closeApp', 'Полностью закрыть Mini App — музыка останавливается (ожидаемо)']
   ];
   const checkState = saved.checks || {};
@@ -143,6 +144,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   let userPause = false;
   let switching = false;
   let seeking = false;
+  let interrupted = false;
 
   const persist = () => {
     try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300) })); } catch {}
@@ -221,7 +223,8 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       el.querySelector('b').textContent = r.verdict;
       el.querySelector('small').textContent =
         `${r.when} · ${r.src} · в фоне ${Math.round(r.wall)} с, проиграно ${Math.round(r.prog)} с` +
-        (r.tracks ? `, треков сменилось: ${r.tracks}` : '') + (r.pauses ? `, системных пауз: ${r.pauses}` : '');
+        (r.tracks ? `, автопереходов: ${r.tracks}` : '') + (r.switches ? `, ручных переключений: ${r.switches}` : '') +
+        (r.pauses ? `, системных пауз: ${r.pauses}` : '');
       box.appendChild(el);
     });
   }
@@ -285,23 +288,30 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
   function setupMediaSession() {
     if (!('mediaSession' in navigator)) { log('Media Session API не поддерживается'); return; }
+    // iOS: если зарегистрированы seekbackward/seekforward, экран блокировки показывает ±10 с
+    // вместо ⏮ ⏭. Поэтому регистрируем только переключение треков и перемотку ползунком.
     const h = {
       play: () => { log('MS: play'); play(); },
       pause: () => { log('MS: pause'); userPause = true; audio.pause(); },
       stop: () => { log('MS: stop'); userPause = true; audio.pause(); },
       previoustrack: () => { log('MS: previoustrack'); prev(); },
       nexttrack: () => { log('MS: nexttrack'); next(true); },
-      seekbackward: d => { log('MS: seekbackward'); audio.currentTime = Math.max(0, audio.currentTime - (d.seekOffset || 10)); },
-      seekforward: d => { log('MS: seekforward'); audio.currentTime = Math.min(audio.duration || 0, audio.currentTime + (d.seekOffset || 10)); },
-      seekto: d => { log('MS: seekto ' + fmt(d.seekTime)); audio.currentTime = d.seekTime; updatePosition(); }
+      seekto: d => { log('MS: seekto ' + fmt(d.seekTime)); audio.currentTime = d.seekTime; updatePosition(); },
+      seekbackward: null,
+      seekforward: null
     };
     Object.entries(h).forEach(([a, fn]) => {
-      try { navigator.mediaSession.setActionHandler(a, fn); } catch { log('MS: действие не поддерживается — ' + a); }
+      try { navigator.mediaSession.setActionHandler(a, fn); } catch { if (fn) log('MS: действие не поддерживается — ' + a); }
     });
   }
 
   /* ---------- playback ---------- */
   function load(i, autoplay) {
+    if (away) {
+      away.acc += Math.max(0, audio.currentTime - away.segStart);
+      away.segStart = 0;
+      away.switches++;
+    }
     idx = (i + tracks.length) % tracks.length;
     switching = true;
     audio.src = tracks[idx].src;
@@ -314,7 +324,10 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   function play() {
     if (!audio.src) { load(idx, false); }
     const p = audio.play();
-    if (p && p.catch) p.catch(e => log(`play() отклонён: ${e.name} — ${e.message}`));
+    if (p && p.catch) p.catch(e => {
+      if (e.name === 'AbortError') return; // трек переключили, пока грузился предыдущий — это нормально
+      log(`play() отклонён: ${e.name} — ${e.message}`);
+    });
   }
   function next(autoplay) { load(idx + 1, autoplay ?? !audio.paused); }
   function prev() {
@@ -338,18 +351,24 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     if (!seeking && audio.duration) seek.value = Math.round(audio.currentTime / audio.duration * 1000);
   });
   audio.addEventListener('loadedmetadata', () => { $('#dur').textContent = fmt(audio.duration); updatePosition(); });
-  audio.addEventListener('play', () => { log('▶ play'); renderPlayState(); updatePosition(); });
+  audio.addEventListener('play', () => {
+    log('▶ play');
+    interrupted = false;
+    if (away && away.userPauseStart) { away.userPausedMs += Date.now() - away.userPauseStart; away.userPauseStart = 0; }
+    renderPlayState(); updatePosition();
+  });
   audio.addEventListener('pause', () => {
     if (audio.ended || switching) return;
     const bySystem = !userPause;
-    log('⏸ pause' + (bySystem ? ' (не пользователем)' : ''));
-    if (away && bySystem) away.pauses++;
     userPause = false;
+    log('⏸ pause' + (bySystem ? ' (системная — звонок, голосовое, другое аудио)' : ''));
+    if (bySystem) interrupted = true;
+    if (away) { if (bySystem) away.pauses++; else away.userPauseStart = Date.now(); }
     renderPlayState(); updatePosition();
   });
   audio.addEventListener('ended', () => {
     log('⏹ ended → следующий');
-    if (away) away.ended.push({ dur: audio.duration || 0 });
+    if (away) away.autoNext++;
     next(true);
   });
   ['waiting', 'stalled', 'suspend', 'error'].forEach(ev => audio.addEventListener(ev, () => {
@@ -361,25 +380,33 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   function goAway(src) {
     log('уход: ' + src);
     if (away) return;
-    away = { t: Date.now(), src, wasPlaying: !audio.paused, idx, ct: audio.currentTime, ended: [], pauses: 0 };
+    away = {
+      t: Date.now(), src, wasPlaying: !audio.paused, segStart: audio.currentTime, acc: 0,
+      switches: 0, autoNext: 0, pauses: 0, userPausedMs: 0, userPauseStart: audio.paused ? Date.now() : 0
+    };
+  }
+  function resumeAfterInterruption(src) {
+    if (!interrupted || !audio.src) return;
+    log('автовозобновление после прерывания (' + src + ')');
+    play();
   }
   function comeBack(src) {
-    if (!away) { log('возврат: ' + src); return; }
-    const a = away; away = null;
     log('возврат: ' + src);
-    const wall = (Date.now() - a.t) / 1000;
-    if (wall < 3) return;
-    if (!a.wasPlaying) { log(`замер пропущен: при уходе (${a.src}) музыка не играла`); return; }
-    let prog;
-    if (!a.ended.length) prog = idx === a.idx ? audio.currentTime - a.ct : audio.currentTime;
-    else prog = Math.max(0, a.ended[0].dur - a.ct) + a.ended.slice(1).reduce((s, e) => s + e.dur, 0) + audio.currentTime;
-    prog = Math.max(0, prog);
+    resumeAfterInterruption(src);
+    if (!away) return;
+    const a = away; away = null;
+    if (a.userPauseStart) a.userPausedMs += Date.now() - a.userPauseStart;
+    const wall = (Date.now() - a.t - a.userPausedMs) / 1000;   // время, когда музыка ДОЛЖНА была играть
+    const prog = Math.max(0, a.acc + audio.currentTime - a.segStart);
+    if (wall < 5) { if (wall >= 0) log('замер пропущен: слишком коротко'); return; }
+    if (!a.wasPlaying && !a.switches) { log(`замер пропущен: при уходе (${a.src}) музыка не играла`); return; }
     const ratio = prog / wall;
     let code, verdict;
     if (ratio >= 0.85) { code = 'ok'; verdict = '✅ Играло в фоне'; }
-    else if (ratio >= 0.1) { code = 'warn'; verdict = `⚠️ Остановилось примерно через ${Math.round(prog)} с`; }
+    else if (ratio >= 0.1) { code = 'warn'; verdict = `⚠️ Играло ${Math.round(prog)} из ${Math.round(wall)} с`; }
     else { code = 'bad'; verdict = '❌ В фоне не играло'; }
-    results.push({ when: new Date().toTimeString().slice(0, 5), src: a.src, wall, prog, tracks: a.ended.length, pauses: a.pauses, code, verdict });
+    results.push({ when: new Date().toTimeString().slice(0, 5), src: a.src, wall, prog,
+      tracks: a.autoNext, switches: a.switches - a.autoNext, pauses: a.pauses, code, verdict });
     log(`замер: ${verdict} (${Math.round(prog)}/${Math.round(wall)} с)`);
     persist(); renderResults();
     tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred(code === 'ok' ? 'success' : code === 'bad' ? 'error' : 'warning');
@@ -438,9 +465,9 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
 
   /* ---------- report ---------- */
   function buildReport() {
-    const lines = ['PLAYR — тест фонового воспроизведения', new Date().toLocaleString('ru-RU'), '', ...env, '', 'Замеры:'];
+    const lines = ['PLAYR — iOS тест фонового воспроизведения', new Date().toLocaleString('ru-RU'), '', ...env, '', 'Замеры:'];
     if (!results.length) lines.push('  нет');
-    results.forEach(r => lines.push(`  ${r.verdict} | ${r.src} | ${Math.round(r.prog)}/${Math.round(r.wall)} с | треков: ${r.tracks} | сист. пауз: ${r.pauses}`));
+    results.forEach(r => lines.push(`  ${r.verdict} | ${r.src} | ${Math.round(r.prog)}/${Math.round(r.wall)} с | авто: ${r.tracks || 0} | ручн: ${r.switches || 0} | сист. пауз: ${r.pauses}`));
     lines.push('', 'Чек-лист:');
     checks.forEach(([k, l]) => lines.push(`  ${{ ok: '✅', bad: '❌' }[checkState[k]] || '—'} ${l}`));
     lines.push('', 'Лог (последние 80):', ...logLines.slice(-80));
