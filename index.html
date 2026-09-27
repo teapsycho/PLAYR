@@ -76,7 +76,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   <section class="stage">
     <div class="cover paused" id="cover"><img id="coverImg" alt=""></div>
     <div class="meta"><b id="title">—</b><span id="artist">Нажмите ▶ чтобы начать</span></div>
-    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-3</p>
+    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-5</p>
     <div class="seekrow"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Позиция"><span id="dur">0:00</span></div>
     <div class="controls">
       <button id="prev" aria-label="Предыдущий"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
@@ -88,6 +88,12 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   <h2>Режим кнопок экрана блокировки</h2>
   <p class="hint">Выберите режим, включите трек, заблокируйте экран и посмотрите, какие кнопки видны. Нажмите их и вернитесь сюда.</p>
   <div class="list" id="modes" style="margin-top:10px"></div>
+  <div class="list" style="margin-top:10px">
+    <label class="row" style="cursor:pointer">
+      <div class="t"><b>Перезапуск звука после прерывания</b><small>После голосового или звонка аудио пересоздаётся заново, чтобы вернуть звук в динамик</small></div>
+      <input type="checkbox" id="recover" style="width:22px;height:22px;accent-color:var(--accent)">
+    </label>
+  </div>
 
   <h2>Очередь</h2>
   <div class="list" id="queue"></div>
@@ -125,7 +131,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   const $ = s => document.querySelector(s);
   const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
   const audio = $('#audio');
-  const STORE = 'playr-bgtest-ios-v3';
+  const STORE = 'playr-bgtest-ios-v5';
 
   /* ---------- state ---------- */
   const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } })();
@@ -141,7 +147,8 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     ['lockArtwork', 'Название и обложка видны на экране блокировки'],
     ['autoNext', 'Автопереход на следующий трек в фоне'],
     ['headset', 'Кнопки наушников (пауза / следующий)'],
-    ['interrupt', 'После звонка / голосового: при возврате в PLAYR музыка продолжается сама'],
+    ['interrupt', 'После голосового музыка снова звучит (сама или при возврате в PLAYR)'],
+    ['interruptSilent', 'После голосового ползунок идёт, а звука нет (отметить ✅, если так было)'],
     ['closeApp', 'Полностью закрыть Mini App — музыка останавливается (ожидаемо)']
   ];
   const checkState = saved.checks || {};
@@ -152,9 +159,11 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   let switching = false;
   let seeking = false;
   let interrupted = false;
+  let selfPlay = false;
+  let restarting = false;
 
   const persist = () => {
-    try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300), mode })); } catch {}
+    try { localStorage.setItem(STORE, JSON.stringify({ results, checks: checkState, log: logLines.slice(-300), mode, recover: recoverOn })); } catch {}
   };
 
   /* ---------- helpers ---------- */
@@ -287,23 +296,41 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     A: { name: 'Треки + ползунок', desc: '⏮ ⏭, перемотка ползунком, позиция передаётся', seekto: true,  position: true,  remap: false },
     B: { name: 'Только треки',     desc: '⏮ ⏭, без перемотки ползунком, позиция передаётся', seekto: false, position: true,  remap: false },
     C: { name: 'Только треки, без позиции', desc: '⏮ ⏭, система не знает длительность трека', seekto: false, position: false, remap: false },
+    E: { name: 'Треки + ползунок, позицию ведёт WebKit', desc: 'Как A, но PLAYR не передаёт позицию — её берёт сам браузер', seekto: true, position: false, remap: false },
     D: { name: 'Подмена ±10 на треки', desc: 'Если iOS всё равно рисует ±10 — эти кнопки переключают трек', seekto: true, position: true, remap: true }
   };
   let mode = saved.mode && MODES[saved.mode] ? saved.mode : 'A';
+  let recoverOn = saved.recover !== false;
   let lastMsAction = 0;
   const msLog = name => { lastMsAction = Date.now(); log('MS: ' + name); };
 
-  function updatePosition() {
+  let pendingSeek = null;   // цель перемотки, пока браузер ещё не закончил seek
+  function updatePosition(forced) {
     if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
     if (!MODES[mode].position) { try { navigator.mediaSession.setPositionState(); } catch {} return; }
     if (!isFinite(audio.duration) || audio.duration <= 0) return;
+    const pos = forced ?? pendingSeek ?? audio.currentTime;
     try {
       navigator.mediaSession.setPositionState({
-        duration: audio.duration, playbackRate: audio.playbackRate || 1,
-        position: Math.min(audio.currentTime, audio.duration)
+        duration: audio.duration,
+        playbackRate: audio.paused ? 0 : (audio.playbackRate || 1),
+        position: Math.max(0, Math.min(pos, audio.duration))
       });
     } catch {}
   }
+  function seekTo(t, source, fast) {
+    if (!isFinite(audio.duration)) return;
+    t = Math.max(0, Math.min(t, audio.duration - 0.25));
+    pendingSeek = t;
+    updatePosition(t);                       // сразу сообщаем системе новую позицию, чтобы ползунок не отпрыгнул
+    if (fast && typeof audio.fastSeek === 'function') audio.fastSeek(t); else audio.currentTime = t;
+    log(`${source}: перемотка → ${t.toFixed(1)} с${fast ? ' (fastSeek)' : ''}`);
+  }
+  audio.addEventListener('seeked', () => {
+    if (pendingSeek !== null) log(`seeked: фактически ${audio.currentTime.toFixed(1)} с (цель ${pendingSeek.toFixed(1)})`);
+    pendingSeek = null;
+    updatePosition();
+  });
   function setupMediaSession() {
     if (!('mediaSession' in navigator)) { log('Media Session API не поддерживается'); return; }
     const m = MODES[mode];
@@ -313,7 +340,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       stop: () => { msLog('stop'); userPause = true; audio.pause(); },
       previoustrack: () => { msLog('previoustrack'); prev(); },
       nexttrack: () => { msLog('nexttrack'); next(true); },
-      seekto: m.seekto ? d => { msLog('seekto ' + fmt(d.seekTime)); audio.currentTime = d.seekTime; updatePosition(); } : null,
+      seekto: m.seekto ? d => { lastMsAction = Date.now(); seekTo(d.seekTime, 'MS seekto', !!d.fastSeek); } : null,
       seekbackward: m.remap ? () => { msLog('seekbackward → предыдущий трек'); prev(); } : null,
       seekforward: m.remap ? () => { msLog('seekforward → следующий трек'); next(true); } : null
     };
@@ -367,6 +394,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
   function play() {
     if (!audio.src) { load(idx, false); }
+    selfPlay = true;
     const p = audio.play();
     if (p && p.catch) p.catch(e => {
       if (e.name === 'AbortError') return; // трек переключили, пока грузился предыдущий — это нормально
@@ -388,7 +416,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
 
   const seek = $('#seek');
   seek.addEventListener('input', () => { seeking = true; $('#cur').textContent = fmt(seek.value / 1000 * (audio.duration || 0)); });
-  seek.addEventListener('change', () => { lastMsAction = Date.now(); if (isFinite(audio.duration)) audio.currentTime = seek.value / 1000 * audio.duration; seeking = false; updatePosition(); });
+  seek.addEventListener('change', () => { lastMsAction = Date.now(); if (isFinite(audio.duration)) seekTo(seek.value / 1000 * audio.duration, 'ползунок'); seeking = false; });
 
   audio.addEventListener('timeupdate', () => {
     $('#cur').textContent = fmt(audio.currentTime);
@@ -396,8 +424,11 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   });
   audio.addEventListener('loadedmetadata', () => { $('#dur').textContent = fmt(audio.duration); updatePosition(); });
   audio.addEventListener('play', () => {
-    log('▶ play');
+    const byOS = interrupted && !selfPlay && !restarting;
+    log('▶ play' + (byOS ? ' (возобновила система после прерывания)' : ''));
+    selfPlay = false;
     interrupted = false;
+    if (byOS && recoverOn) { hardRestart('система возобновила после прерывания'); return; }
     setupMediaSession();
     if (away && away.userPauseStart) { away.userPausedMs += Date.now() - away.userPauseStart; away.userPauseStart = 0; }
     renderPlayState(); updatePosition();
@@ -433,7 +464,26 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   function resumeAfterInterruption(src) {
     if (!interrupted || !audio.src) return;
     log('автовозобновление после прерывания (' + src + ')');
-    play();
+    if (recoverOn) hardRestart(src); else play();
+  }
+  /* Пересоздаём аудио на той же позиции: после чужого аудио (голосовое в Telegram) iOS может оставить
+     сессию в режиме разговорного динамика или «немого» воспроизведения — время идёт, звука нет. */
+  function hardRestart(reason) {
+    const t = audio.currentTime, src = tracks[idx].src;
+    log(`перезапуск аудио (${reason}) на ${t.toFixed(1)} с`);
+    restarting = true; switching = true;
+    audio.pause();
+    audio.removeAttribute('src'); audio.load();
+    audio.src = src; audio.load();
+    switching = false;
+    const done = () => {
+      audio.removeEventListener('loadedmetadata', done);
+      try { audio.currentTime = t; } catch {}
+      play();
+      setTimeout(() => { restarting = false; }, 500);
+      updateMediaSession();
+    };
+    audio.addEventListener('loadedmetadata', done);
   }
   function comeBack(src) {
     log('возврат: ' + src);
@@ -485,7 +535,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
 
   /* ---------- environment ---------- */
-  const BUILD = 'ios-3';
+  const BUILD = 'ios-5';
   const env = [
     'Сборка: ' + BUILD,
     tg ? `Telegram: ${tg.platform}, Bot API ${tg.version}` : 'Открыто вне Telegram',
@@ -515,7 +565,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     const lines = ['PLAYR — iOS тест фонового воспроизведения', new Date().toLocaleString('ru-RU'), '', ...env, '', 'Замеры:'];
     if (!results.length) lines.push('  нет');
     results.forEach(r => lines.push(`  ${r.verdict} | ${r.src} | ${Math.round(r.prog)}/${Math.round(r.wall)} с | авто: ${r.tracks || 0} | ручн: ${r.switches || 0} | сист. пауз: ${r.pauses}`));
-    lines.push('', 'Режим кнопок: ' + mode + ' — ' + MODES[mode].name);
+    lines.push('', 'Режим кнопок: ' + mode + ' — ' + MODES[mode].name, 'Перезапуск после прерывания: ' + (recoverOn ? 'вкл' : 'выкл'));
     lines.push('', 'Чек-лист:');
     checks.forEach(([k, l]) => lines.push(`  ${{ ok: '✅', bad: '❌' }[checkState[k]] || '—'} ${l}`));
     lines.push('', 'Лог (последние 80):', ...logLines.slice(-80));
@@ -545,6 +595,8 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
 
   setupMediaSession();
   renderModes();
+  $('#recover').checked = recoverOn;
+  $('#recover').addEventListener('change', e => { recoverOn = e.target.checked; persist(); log('перезапуск после прерывания: ' + (recoverOn ? 'вкл' : 'выкл')); });
   load(0, false);
   renderPlayState(); renderResults(); renderChecklist();
   $('#log').textContent = logLines.slice(-200).reverse().join('\n');
