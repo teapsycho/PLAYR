@@ -76,7 +76,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   <section class="stage">
     <div class="cover paused" id="cover"><img id="coverImg" alt=""></div>
     <div class="meta"><b id="title">—</b><span id="artist">Нажмите ▶ чтобы начать</span></div>
-    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-6</p>
+    <p class="hint" id="build" style="margin-bottom:8px">Сборка ios-7</p>
     <p class="hint" id="stallHint" style="margin-bottom:8px;color:var(--warn);display:none">Воспроизведение прервалось — нажмите ▶</p>
     <div class="seekrow"><span id="cur">0:00</span><input id="seek" type="range" min="0" max="1000" value="0" aria-label="Позиция"><span id="dur">0:00</span></div>
     <div class="controls">
@@ -132,7 +132,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   const $ = s => document.querySelector(s);
   const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData !== undefined ? window.Telegram.WebApp : null;
   const audio = $('#audio');
-  const STORE = 'playr-bgtest-ios-v6';
+  const STORE = 'playr-bgtest-ios-v7';
 
   /* ---------- state ---------- */
   const saved = (() => { try { return JSON.parse(localStorage.getItem(STORE)) || {}; } catch { return {}; } })();
@@ -148,9 +148,10 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     ['lockArtwork', 'Название и обложка видны на экране блокировки'],
     ['autoNext', 'Автопереход на следующий трек в фоне'],
     ['headset', 'Кнопки наушников (пауза / следующий)'],
-    ['ccMoves', 'Ползунок в шторке сам движется во время игры'],
-    ['ccScrub', 'Мелкая перемотка в шторке (2–3 с) срабатывает'],
+    ['ccSyncF', 'Режим F: после мелкой перемотки в шторке ползунок встаёт на новое место'],
+    ['ccSyncG', 'Режим G: после мелкой перемотки в шторке ползунок встаёт на новое место'],
     ['interrupt', 'После голосового музыка продолжила сама'],
+    ['interruptLockInfo', 'После голосового на экране блокировки видно PLAYR (название/обложка), а не голосовое'],
     ['interruptPaused', 'После голосового кнопка в PLAYR и на экране блокировки показывает ▶ (а не «играет»)'],
     ['interruptApp', 'После голосового нажатие ▶ в PLAYR вернуло звук'],
     ['interruptLock', 'После голосового нажатие ▶ на экране блокировки вернуло звук'],
@@ -307,6 +308,8 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     B: { name: 'Только треки',     desc: '⏮ ⏭, без перемотки ползунком, позиция передаётся', seekto: false, position: true,  remap: false },
     C: { name: 'Только треки, без позиции', desc: '⏮ ⏭, система не знает длительность трека', seekto: false, position: false, remap: false },
     E: { name: 'Треки + ползунок, позицию ведёт WebKit', desc: 'Как A, но PLAYR не передаёт позицию — её берёт сам браузер', seekto: true, position: false, remap: false },
+    F: { name: 'Как A + толчок шторки', desc: 'После перемотки позиция отправляется с чуть другой длительностью, чтобы iOS точно обновила ползунок', seekto: true, position: true, remap: false, nudge: true },
+    G: { name: 'Как F + обновление карточки', desc: 'Как F, и после перемотки заново отправляются название/обложка', seekto: true, position: true, remap: false, nudge: true, remeta: true },
     D: { name: 'Подмена ±10 на треки', desc: 'Если iOS всё равно рисует ±10 — эти кнопки переключают трек', seekto: true, position: true, remap: true }
   };
   let mode = saved.mode && MODES[saved.mode] ? saved.mode : 'A';
@@ -315,14 +318,16 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   const msLog = name => { lastMsAction = Date.now(); log('MS: ' + name); };
 
   let pendingSeek = null;   // цель перемотки, пока браузер ещё не закончил seek
-  function updatePosition(forced) {
+  /* nudge: длительность +0,01 с. Гипотеза: мелкий сдвиг позиции WebKit/iOS считают «тем же состоянием»
+     и шторку не обновляют; изменённая длительность заставляет отправить карточку целиком. */
+  function updatePosition(forced, nudge) {
     if (!('mediaSession' in navigator) || !navigator.mediaSession.setPositionState) return;
     if (!MODES[mode].position) { try { navigator.mediaSession.setPositionState(); } catch {} return; }
     if (!isFinite(audio.duration) || audio.duration <= 0) return;
     const pos = forced ?? pendingSeek ?? audio.currentTime;
     try {
       navigator.mediaSession.setPositionState({
-        duration: audio.duration,
+        duration: audio.duration + (nudge ? 0.01 : 0),
         playbackRate: audio.paused ? 0 : (audio.playbackRate || 1),
         position: Math.max(0, Math.min(pos, audio.duration))
       });
@@ -333,15 +338,17 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     t = Math.max(0, Math.min(t, audio.duration - 0.25));
     const from = audio.currentTime, d = t - from;
     pendingSeek = t;
-    updatePosition(t);                       // сразу сообщаем системе новую позицию, чтобы ползунок не отпрыгнул
+    updatePosition(t, MODES[mode].nudge);    // сразу сообщаем системе новую позицию, чтобы ползунок не отпрыгнул
     if (fast && typeof audio.fastSeek === 'function') audio.fastSeek(t); else audio.currentTime = t;
     log(`${source}: перемотка ${from.toFixed(1)} → ${t.toFixed(1)} с (Δ ${d >= 0 ? '+' : ''}${d.toFixed(1)})${fast ? ' (fastSeek)' : ''}` +
       (Math.abs(d) < 0.7 ? ' — цель совпала с текущей позицией' : ''));
   }
   audio.addEventListener('seeked', () => {
     if (pendingSeek !== null) log(`seeked: фактически ${audio.currentTime.toFixed(1)} с (цель ${pendingSeek.toFixed(1)})`);
+    const wasPending = pendingSeek !== null;
     pendingSeek = null;
-    updatePosition();
+    updatePosition();                        // в F/G длительность снова настоящая — это ещё одно «новое» состояние для iOS
+    if (wasPending && MODES[mode].remeta) updateMediaSession();
   });
   function setupMediaSession() {
     if (!('mediaSession' in navigator)) { log('Media Session API не поддерживается'); return; }
@@ -418,6 +425,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
      или зависание — это единственный момент, когда у нас есть жест пользователя, и iOS может снова включить звук. */
   function userPlay(src) {
     if (stalled || interrupted) { recoverFromStall(src); return; }
+    if (unlockOn && !actx) unlockAudio();    // Web Audio заводим заранее, в жесте: вдруг iOS сама возобновит его после голосового
     play();
   }
   function recoverFromStall(src) {
@@ -433,7 +441,10 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     try {
       const AC = window.AudioContext || window.webkitAudioContext;
       if (!AC) { log('Web Audio не поддерживается'); return; }
-      if (!actx) actx = new AC();
+      if (!actx) {
+        actx = new AC();
+        actx.onstatechange = () => log('Web Audio: состояние ' + actx.state);
+      }
       const before = actx.state;
       const s = actx.createBufferSource();
       s.buffer = actx.createBuffer(1, 1, 22050);
@@ -478,10 +489,12 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   });
   audio.addEventListener('pause', () => {
     if (audio.ended || switching || restarting) return;
+    if (quietPauses > 0) { quietPauses--; return; }
     if (stallPause) {
       stallPause = false;
       log('⏸ пауза: воспроизведение зависло — ждём ▶ от пользователя');
       renderPlayState(); updatePosition();
+      republishNowPlaying();
       return;
     }
     const bySystem = !userPause;
@@ -547,12 +560,31 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
      После голосового iOS сама шлёт play, элемент встаёт в waiting: paused=false, время стоит, звука нет.
      Если позиция не растёт — честно показываем паузу (в PLAYR и на экране блокировки) и ждём ▶ от пользователя. */
   let progCt = 0, progWall = Date.now();
+  let quietPauses = 0;        // наши служебные pause(), которые не надо считать ни системными, ни пользовательскими
   function markProgress() { progCt = audio.currentTime; progWall = Date.now(); }
+  /* После голосового карточку на экране блокировки мог занять плеер Telegram — отправляем свою заново. */
+  function republishNowPlaying() {
+    if (!('mediaSession' in navigator)) return;
+    updateMediaSession(); setupMediaSession();
+    navigator.mediaSession.playbackState = 'paused';
+    log('карточка экрана блокировки отправлена заново (пауза)');
+  }
+  /* Без нажатия: будим Web Audio (если он был заведён в жесте раньше) и делаем pause/play элемента. */
+  function autoKick() {
+    log(`авто-попытка без нажатия: ${actx ? `Web Audio (${actx.state}) + ` : ''}pause/play на ${audio.currentTime.toFixed(1)} с`);
+    recovery = { step: 1, src: 'авто', auto: true };
+    if (actx) actx.resume().then(() => log('Web Audio (авто): ' + actx.state), e => log(`Web Audio (авто) отклонён: ${e.name}`));
+    quietPauses++;
+    audio.pause();
+    play();
+    markProgress();
+  }
   function giveUp(why) {
-    log(`восстановление не удалось: ${why} — ставим паузу, нажмите ▶ ещё раз`);
+    log(`воспроизведение остановлено: ${why} — ставим паузу, ждём ▶`);
     recovery = null;
     stalled = true;
-    if (!audio.paused) { stallPause = true; audio.pause(); } else { renderPlayState(); updatePosition(); }
+    if (!audio.paused) { stallPause = true; audio.pause(); } else { renderPlayState(); updatePosition(); republishNowPlaying(); }
+    tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('warning');
   }
   setInterval(() => {
     if (audio.paused || audio.ended || !audio.src || switching || restarting || seeking || pendingSeek !== null) { markProgress(); return; }
@@ -564,6 +596,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     const stuckMs = Date.now() - progWall;
     if (stuckMs < (strict ? 2500 : 10000)) return;
     log(`зависание: ▶ включён, позиция стоит ${(stuckMs / 1000).toFixed(1)} с на ${audio.currentTime.toFixed(1)} с (readyState ${audio.readyState}, networkState ${audio.networkState})`);
+    if (recovery && recovery.auto) { giveUp('авто-попытка не помогла'); return; }
     if (recovery && recovery.step === 1) {
       recovery.step = 2;
       hardRestart('шаг 2 — play() не помог');
@@ -571,9 +604,12 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
       return;
     }
     if (recovery) { giveUp('перезагрузка тоже не помогла'); return; }
-    stalled = true; stallPause = true;
-    audio.pause();
-    tg && tg.HapticFeedback && tg.HapticFeedback.notificationOccurred('warning');
+    if (Date.now() - lastInterruptAt >= 60000) {
+      // прерывания не было — скорее всего, долгая сетевая буферизация: просто пауза, без авто-попытки
+      giveUp('долгое ожидание данных');
+      return;
+    }
+    autoKick();
   }, 500);
   function comeBack(src) {
     log('возврат: ' + src);
@@ -625,7 +661,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
   }
 
   /* ---------- environment ---------- */
-  const BUILD = 'ios-6';
+  const BUILD = 'ios-7';
   const env = [
     'Сборка: ' + BUILD,
     tg ? `Telegram: ${tg.platform}, Bot API ${tg.version}` : 'Открыто вне Telegram',
@@ -658,7 +694,7 @@ textarea#reportBox{width:100%;height:160px;margin-top:10px;display:none;border-r
     lines.push('', 'Режим кнопок: ' + mode + ' — ' + MODES[mode].name, 'Web Audio при ▶ после прерывания: ' + (unlockOn ? 'вкл' : 'выкл'));
     lines.push('', 'Чек-лист:');
     checks.forEach(([k, l]) => lines.push(`  ${{ ok: '✅', bad: '❌' }[checkState[k]] || '—'} ${l}`));
-    lines.push('', 'Лог (последние 80):', ...logLines.slice(-80));
+    lines.push('', 'Лог (последние 150):', ...logLines.slice(-150));
     return lines.join('\n');
   }
   $('#copy').onclick = async () => {
